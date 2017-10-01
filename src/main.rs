@@ -1,6 +1,28 @@
 #![allow(unused_variables)]
 
 #[macro_use]
+extern crate vulkano_shader_derive;
+
+mod cs {
+    #[derive(VulkanoShader)]
+    #[ty = "compute"]
+    #[src = "
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer Data {
+	uint data[];
+} buf;
+
+void main() {
+	uint idx = gl_GlobalInvocationID.x;
+	buf.data[idx] *= 12;
+}//"
+	]
+	struct Dummy;
+}
+
 extern crate vulkano;
 
 use vulkano::instance::Instance;
@@ -18,10 +40,16 @@ use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::CommandBuffer;
 use vulkano::sync::GpuFuture;
 
+use std::sync::Arc;
+
+use vulkano::pipeline::ComputePipeline;
+use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
+
 struct MyStruct {
 	a: u32,
 	b: bool,
 }
+
 
 fn main() {
 	let instance = Instance::new(None, &InstanceExtensions::none(), None).expect("failed to create instance");
@@ -70,7 +98,7 @@ fn main() {
 	let mut array_content = buffer_from_iter.write().unwrap();
 	array_content[12] = 83;
 
-	//buffer operations
+	//buffer operations basics
 	//create src/dst buffers
 	let source_content = 0 .. 64;
 	let src = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), source_content).expect("failed to create buffer");
@@ -78,7 +106,8 @@ fn main() {
 	let dest_content = (0 .. 64).map(|_| 0);
 	let dst = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), dest_content).expect("failed to create buffer");
 
-	//create a command buffer
+	//create a command buffer with copy_buffer command
+	//reminder: all the types are Arc<...> so .clone() only copies a pointer 
 	let command_buffer = AutoCommandBufferBuilder::new(device.clone(), queue.family()).unwrap()
 		.copy_buffer(src.clone(), dst.clone()).unwrap()
 		.build().unwrap();
@@ -94,4 +123,45 @@ fn main() {
 	let dst_content = dst.read().unwrap();
 	assert_eq!(&*src_content, &*dst_content);
 	println!("GPU copy succeeded!");
+
+	//compute operations: let's multiply all the values in our buffer by 12
+	let data_iter = 0 .. 65536;
+	let data_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter).expect("failed to create buffer");
+
+
+	//Shader::load was created by vulkano_shader_derive which compiles the 	GLSL code
+	let shader = cs::Shader::load(device.clone()).expect("failed to create shader module");
+
+	//create a compute pipeline which we wil need to execute
+	let compute_pipeline = Arc::new(ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).expect("failed to create compute pipeline"));
+
+	//see GLSL code :
+	//layout(set = 0, binding = 0) buffer Data
+	//defines the descriptor #0 in set #0.
+	//descriptors can contain many things (buffer, buffer view, image, sampled image, ...), here a buffer
+	//compute pipeline => descriptor set => descriptor
+
+	//now we will create the descriptor set that will contain a descriptor for our buffer
+	let set = Arc::new(PersistentDescriptorSet::start(compute_pipeline.clone(), 0)
+	.add_buffer(data_buffer.clone()).unwrap()
+	.build().unwrap());
+
+	//now we can create a new command buffer that will execute our compute pipeline
+	//see GLSL code :
+	//layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+	//we have 64k elements. We want to aim for a local size of 32/64, that's why we spawn 1024 work groups
+	let command_buffer = AutoCommandBufferBuilder::new(device.clone(), queue.family()).unwrap()
+		.dispatch([1024, 1, 1], compute_pipeline.clone(), set.clone(), ()).unwrap()
+		.build().unwrap();
+
+	let submitted = command_buffer.execute(queue.clone()).unwrap();
+	submitted.then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+
+	//read back the results
+	let content = data_buffer.read().unwrap();
+	for (n, val) in content.iter().enumerate() {
+		assert_eq!(*val, n as u32 * 12);
+	}
+
+	println!("GPU multiply-by-12 operation successful!");
 }
