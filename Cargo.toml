@@ -6,3 +6,4 @@ authors = ["mistrpopo <fpegeot@gmail.com>"]
 [dependencies]
 vulkano = "*"
 vulkano-shader-derive = "*"
+image = "*"

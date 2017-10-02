@@ -2,28 +2,8 @@
 
 #[macro_use]
 extern crate vulkano_shader_derive;
-
-mod cs {
-    #[derive(VulkanoShader)]
-    #[ty = "compute"]
-    #[src = "
-#version 450
-
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-
-layout(set = 0, binding = 0) buffer Data {
-	uint data[];
-} buf;
-
-void main() {
-	uint idx = gl_GlobalInvocationID.x;
-	buf.data[idx] *= 12;
-}//"
-	]
-	struct Dummy;
-}
-
 extern crate vulkano;
+extern crate image;
 
 use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
@@ -46,17 +26,49 @@ use std::sync::Arc;
 use vulkano::pipeline::ComputePipeline;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 
+use vulkano::format::Format;
+use vulkano::image::Dimensions;
+use vulkano::image::StorageImage;
+
+use vulkano::format::ClearValue;
+
+use image::ImageBuffer;
+use image::Rgba;
+
 struct MyStruct {
 	a: u32,
 	b: bool,
 }
 
+mod cs {
+    #[derive(VulkanoShader)]
+    #[ty = "compute"]
+    #[src = "
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer Data {
+	uint data[];
+} buf;
+
+void main() {
+	uint idx = gl_GlobalInvocationID.x;
+	buf.data[idx] *= 12;
+}//"
+	]
+	struct Dummy;
+}
 
 fn main() {
 	let (device, queue) = create_vulkan();
 	create_buffers(device.clone());
 	simple_gpu_copy(device.clone(), queue.clone());
 	simple_gpu_shader_compute(device.clone(), queue.clone());
+
+	let image = create_image(device.clone(), queue.clone());
+	clear_image(image.clone(), device.clone(), queue.clone());
+
 }
 
 fn create_vulkan() -> (Arc<Device>, Arc<Queue>) {
@@ -111,7 +123,7 @@ fn create_buffers(device: Arc<Device>) {
 	array_content[12] = 83;
 }
 
-fn simple_gpu_copy(device: Arc<Device>,queue: Arc<Queue>) {
+fn simple_gpu_copy(device: Arc<Device>, queue: Arc<Queue>) {
 	//buffer operations basics
 	//create src/dst buffers
 	let source_content = 0 .. 64;
@@ -139,7 +151,7 @@ fn simple_gpu_copy(device: Arc<Device>,queue: Arc<Queue>) {
 	println!("GPU copy succeeded!");
 }
 
-fn simple_gpu_shader_compute(device: Arc<Device>,queue: Arc<Queue>) {
+fn simple_gpu_shader_compute(device: Arc<Device>, queue: Arc<Queue>) {
 	//compute operations: let's multiply all the values in our buffer by 12
 	let data_iter = 0 .. 65536;
 	let data_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter).expect("failed to create buffer");
@@ -180,4 +192,46 @@ fn simple_gpu_shader_compute(device: Arc<Device>,queue: Arc<Queue>) {
 	}
 
 	println!("GPU multiply-by-12 operation successful!");
+}
+
+fn create_image(device: Arc<Device>,queue: Arc<Queue>) -> Arc<StorageImage<Format>> {
+	//lots of documentation http://vulkano.rs/guide/image-creation
+	//image structures are a specialized way to store image data on the GPU
+
+	//we create a StorageImage, which is the general purpose image container 
+	let image = StorageImage::new(device.clone(), Dimensions::Dim2d { width: 1024, height: 1024 }, 
+		Format::R8G8B8A8Unorm, Some(queue.family())).unwrap();
+
+	image
+}
+
+fn clear_image(image: Arc<StorageImage<Format>>, device: Arc<Device>, queue: Arc<Queue>) {
+	//images have an opaque implementation-specific memory layout
+	//this means you can not modify this image by writing directly in its memory
+	//Instead we use specific commands to ask the GPU to do operations
+
+	//create a CpuAccessibleBuffer to store the result and export back to the CPU
+	let buf = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(),
+	(0 .. 1024 * 1024 * 4).map(|_| 0u8))
+	.expect("failed to create buffer");
+
+
+	//clear_color_image paints the image with a single color
+	//format R8G8B8A8Unorm means we use floating point values between 0 and 1.
+	//GPU stores that into 8 bits mapping 0.0 to 0 and 1.0 to 255.
+	//copy_image_to_buffer copies image to buffer.
+	//buffer can then be considered as "real" U8
+	let command_buffer = AutoCommandBufferBuilder::new(device.clone(), queue.family()).unwrap()
+	.clear_color_image(image.clone(), ClearValue::Float([1.0, 0.0, 1.0, 1.0])).unwrap()
+	.copy_image_to_buffer(image.clone(), buf.clone()).unwrap()
+	.build().unwrap();
+
+	let finished = command_buffer.execute(queue.clone()).unwrap();
+	finished.then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+
+	let buffer_content = buf.read().unwrap();
+	let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, &buffer_content[..]).unwrap();
+	let path = "image.png";
+	image.save(path).unwrap();
+	println!("Image saved to {:?}", path);
 }
