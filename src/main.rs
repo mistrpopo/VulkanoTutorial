@@ -30,6 +30,7 @@ use vulkano::instance::InstanceExtensions;
 use vulkano::instance::PhysicalDevice;
 
 use vulkano::device::Device;
+use vulkano::device::Queue;
 use vulkano::device::DeviceExtensions;
 use vulkano::instance::Features;
 
@@ -52,6 +53,13 @@ struct MyStruct {
 
 
 fn main() {
+	let (device, queue) = create_vulkan();
+	create_buffers(device.clone());
+	simple_gpu_copy(device.clone(), queue.clone());
+	simple_gpu_shader_compute(device.clone(), queue.clone());
+}
+
+fn create_vulkan() -> (Arc<Device>, Arc<Queue>) {
 	let instance = Instance::new(None, &InstanceExtensions::none(), None).expect("failed to create instance");
 	let physical = PhysicalDevice::enumerate(&instance).next().expect("no device available");
 	for family in physical.queue_families() {
@@ -72,7 +80,10 @@ fn main() {
 	//device as (); //--> std::sync::Arc<vulkano::device::Device>
 	//queue as (); //-> Arc<Queue>
 	
+	(device, queue)
+}
 
+fn create_buffers(device: Arc<Device>) {
 	//Many kinds of buffers : CpuAccessibleBuffer, ImmutableBuffer, CpuBufferPool
 	//Simplest kind of buffer is CpuAccessibleBuffer
 
@@ -89,6 +100,7 @@ fn main() {
 	let iter = (0 .. 128).map(|_| 5u8);
 	let buffer_from_iter = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), iter).unwrap();
 
+	//write to buffers
 	let mut content = buffer_from_data_2.write().unwrap();
 	//`content` implements `DerefMut` whose target is of type `MyStruct` (the content of the buffer)
 	//content as (); //-> vulkano::buffer::cpu_accss::WriteLock<'_, MyStruct>
@@ -97,7 +109,9 @@ fn main() {
 
 	let mut array_content = buffer_from_iter.write().unwrap();
 	array_content[12] = 83;
+}
 
+fn simple_gpu_copy(device: Arc<Device>,queue: Arc<Queue>) {
 	//buffer operations basics
 	//create src/dst buffers
 	let source_content = 0 .. 64;
@@ -123,7 +137,9 @@ fn main() {
 	let dst_content = dst.read().unwrap();
 	assert_eq!(&*src_content, &*dst_content);
 	println!("GPU copy succeeded!");
+}
 
+fn simple_gpu_shader_compute(device: Arc<Device>,queue: Arc<Queue>) {
 	//compute operations: let's multiply all the values in our buffer by 12
 	let data_iter = 0 .. 65536;
 	let data_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter).expect("failed to create buffer");
